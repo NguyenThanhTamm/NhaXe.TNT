@@ -47,6 +47,8 @@ import {
   getBookings,
   cancelBooking,
   subscribeBookingStore,
+  fetchBookingsFromSupabase,
+  isSupabaseConfigured,
   Booking,
 } from '@/services/bookingStore';
 
@@ -59,15 +61,29 @@ export default function AdminBookingsPage() {
   const [bookings, setBookings] = useState<Booking[]>(() => getBookings());
 
   useEffect(() => {
-    const refreshData = () => {
-      setBookings(getBookings());
+    let isMounted = true;
+    const refreshData = async () => {
+      if (isSupabaseConfigured) {
+        console.log('🔄 [Admin Bookings] Đang tải danh sách vé trực tiếp từ Supabase...');
+        const cloudBookings = await fetchBookingsFromSupabase();
+        if (isMounted && cloudBookings) {
+          console.log(`✅ [Admin Bookings] Đã cập nhật ${cloudBookings.length} vé từ Supabase vào bảng.`);
+          setBookings(cloudBookings);
+          return;
+        }
+      }
+      if (isMounted) {
+        setBookings(getBookings());
+      }
     };
 
     // 1. Initial load
     refreshData();
 
     // 2. Lắng nghe CustomEvent & Storage Event
-    const unsubscribe = subscribeBookingStore(refreshData);
+    const unsubscribe = subscribeBookingStore(() => {
+      refreshData();
+    });
 
     // 3. Cơ chế Polling tự động mỗi 3 giây
     const interval = setInterval(refreshData, 3000);
@@ -76,6 +92,7 @@ export default function AdminBookingsPage() {
     window.addEventListener('focus', refreshData);
 
     return () => {
+      isMounted = false;
       unsubscribe();
       clearInterval(interval);
       window.removeEventListener('focus', refreshData);

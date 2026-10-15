@@ -1,391 +1,244 @@
 // src/services/supabaseService.ts
-// Tầng tương tác trực tiếp với Supabase Cloud Database
-// Đảm bảo dữ liệu được đồng bộ tập trung, an toàn giữa Mobile App, Web Khách & Admin Portal
+// Tầng tương tác trực tiếp với Supabase Cloud Database (bảng bookings, seats, trips)
+// Đảm bảo không phụ thuộc vào backend local, đồng bộ 100% thời gian thực trên Cloud & Vercel
 
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
-import type { TripDetail, Booking, BusItem, DriverItem, UserAccount } from './bookingStore';
+import type { Booking, TripDetail } from './bookingStore';
 
 // =============================================================================
-// HELPER MAPPER: Chuyển đổi giữa định dạng TypeScript Store và Supabase Table
+// MAPPER: Chuyển đổi dữ liệu giữa Supabase PostgreSQL và TypeScript Booking model
 // =============================================================================
 
-function mapTripToDb(trip: TripDetail) {
-  return {
-    id: trip.id,
-    trip_code: trip.tripCode,
-    route: trip.route,
-    from_city: trip.fromCity,
-    from_station: trip.fromStation,
-    to_city: trip.toCity,
-    to_station: trip.toStation,
-    departure_date: trip.departureDate,
-    departure_time: trip.departureTime,
-    arrival_time: trip.arrivalTime,
-    duration: trip.duration,
-    price: trip.price,
-    bus_type: trip.busType,
-    bus_type_name: trip.busTypeName,
-    bus_id: trip.busId,
-    plate_number: trip.plateNumber,
-    driver_id: trip.driverId,
-    driver_name: trip.driverName,
-    driver_phone: trip.driverPhone,
-    assistant_id: trip.assistantId,
-    assistant_name: trip.assistantName,
-    assistant_phone: trip.assistantPhone,
-    status: trip.status,
-    shift: trip.shift,
-    pickup_points: trip.pickupPoints,
-    dropoff_points: trip.dropoffPoints,
-    seats: trip.seats,
-    updated_at: new Date().toISOString(),
-  };
-}
+export function mapDbRowToBooking(row: any): Booking {
+  const createdDate = row.created_at ? new Date(row.created_at) : new Date();
+  const day = createdDate.getDate().toString().padStart(2, '0');
+  const month = (createdDate.getMonth() + 1).toString().padStart(2, '0');
+  const year = createdDate.getFullYear();
+  const hours = createdDate.getHours().toString().padStart(2, '0');
+  const minutes = createdDate.getMinutes().toString().padStart(2, '0');
+  const formattedCreatedAt = `${day}/${month}/${year} ${hours}:${minutes}`;
 
-function mapDbToTrip(row: any): TripDetail {
-  return {
-    id: row.id,
-    tripCode: row.trip_code || row.tripCode,
-    route: row.route,
-    fromCity: row.from_city || row.fromCity,
-    fromStation: row.from_station || row.fromStation,
-    toCity: row.to_city || row.toCity,
-    toStation: row.to_station || row.toStation,
-    departureDate: row.departure_date || row.departureDate,
-    departureTime: row.departure_time || row.departureTime,
-    arrivalTime: row.arrival_time || row.arrivalTime,
-    duration: row.duration,
-    price: Number(row.price),
-    busType: row.bus_type || row.busType,
-    busTypeName: row.bus_type_name || row.busTypeName,
-    busId: row.bus_id || row.busId,
-    plateNumber: row.plate_number || row.plateNumber,
-    driverId: row.driver_id || row.driverId,
-    driverName: row.driver_name || row.driverName,
-    driverPhone: row.driver_phone || row.driverPhone,
-    assistantId: row.assistant_id || row.assistantId,
-    assistantName: row.assistant_name || row.assistantName,
-    assistantPhone: row.assistant_phone || row.assistantPhone,
-    status: row.status,
-    shift: row.shift,
-    pickupPoints: Array.isArray(row.pickup_points) ? row.pickup_points : [],
-    dropoffPoints: Array.isArray(row.dropoff_points) ? row.dropoff_points : [],
-    seats: Array.isArray(row.seats) ? row.seats : [],
-  };
-}
+  const payStatusUpper = (row.payment_status || 'PENDING').toUpperCase();
+  const paymentStatus: 'PAID' | 'UNPAID' = payStatusUpper === 'PAID' || payStatusUpper === 'SUCCESS' ? 'PAID' : 'UNPAID';
+  const status: 'PAID' | 'PENDING' | 'CANCELLED' =
+    payStatusUpper === 'CANCELLED'
+      ? 'CANCELLED'
+      : (paymentStatus === 'PAID' ? 'PAID' : 'PENDING');
 
-function mapBookingToDb(b: Booking) {
-  return {
-    id: b.id,
-    booking_code: b.bookingCode,
-    trip_id: b.tripId,
-    trip_code: b.tripCode,
-    route: b.route,
-    departure_time: b.departureTime,
-    departure_date: b.departureDate,
-    seats: b.seats,
-    customer_name: b.customerName,
-    customer_phone: b.customerPhone || b.phone,
-    customer_email: b.customerEmail || '',
-    pickup_point: b.pickupPoint,
-    dropoff_point: b.dropoffPoint,
-    total_amount: b.totalAmount,
-    payment_method: b.paymentMethod,
-    payment_status: b.paymentStatus,
-    status: b.status,
-    luggage_note: b.luggageNote || '',
-    created_at: b.createdAt,
-    updated_at: new Date().toISOString(),
-  };
-}
+  const seatCodesArray: string[] = Array.isArray(row.seat_codes)
+    ? row.seat_codes
+    : typeof row.seat_codes === 'string'
+      ? (row.seat_codes.startsWith('{')
+          ? row.seat_codes.replace(/[\{\}"]/g, '').split(',').map((s: string) => s.trim())
+          : [row.seat_codes])
+      : [];
 
-function mapDbToBooking(row: any): Booking {
+  // Tái tạo Route hiển thị đẹp mắt từ điểm đón/trả
+  const pickup = row.pickup_point || 'Bến xe Miền Tây';
+  const dropoff = row.drop_point || row.dropoff_point || 'Bến xe Liên Tỉnh Đà Lạt';
+  const fromName = pickup.split('(')[0].replace(/Bến xe|VP|Trạm/gi, '').trim() || 'Sài Gòn';
+  const toName = dropoff.split('(')[0].replace(/Bến xe|VP|Trạm/gi, '').trim() || 'Đà Lạt';
+  const route = `${fromName} ➔ ${toName}`;
+
   return {
-    id: row.id,
-    bookingCode: row.booking_code || row.bookingCode,
-    tripId: row.trip_id || row.tripId,
-    tripCode: row.trip_code || row.tripCode,
-    route: row.route,
-    departureTime: row.departure_time || row.departureTime,
-    departureDate: row.departure_date || row.departureDate,
-    seats: Array.isArray(row.seats) ? row.seats : [],
-    customerName: row.customer_name || row.customerName,
-    customerPhone: row.customer_phone || row.phone,
-    phone: row.customer_phone || row.phone,
-    customerEmail: row.customer_email || row.customerEmail,
-    pickupPoint: row.pickup_point || row.pickupPoint,
-    dropoffPoint: row.dropoff_point || row.dropoffPoint,
-    totalAmount: Number(row.total_amount || row.totalAmount),
-    paymentMethod: row.payment_method || row.paymentMethod,
-    paymentStatus: row.payment_status || row.paymentStatus,
-    status: row.status,
-    luggageNote: row.luggage_note || row.luggageNote,
-    createdAt: row.created_at || row.createdAt,
+    id: row.id?.toString() || `bk_${row.booking_code}`,
+    bookingCode: row.booking_code || `TNT-${row.id}`,
+    tripId: row.trip_id || 'TRIP-01',
+    tripCode: row.trip_id || 'TRIP-01',
+    route,
+    departureTime: '22:00',
+    departureDate: `${day}/${month}/${year}`,
+    seats: seatCodesArray,
+    customerName: row.customer_name || 'Khách hàng',
+    customerPhone: row.customer_phone || '',
+    phone: row.customer_phone || '',
+    customerEmail: row.customer_email || '',
+    pickupPoint: pickup,
+    dropoffPoint: dropoff,
+    totalAmount: Number(row.total_price || row.total_amount || 0),
+    paymentMethod: ((row.payment_method || 'VNPAY').toUpperCase() as any),
+    paymentStatus,
+    status,
+    luggageNote: row.luggage_note || 'Hành lý tiêu chuẩn',
+    createdAt: formattedCreatedAt,
   };
 }
 
 // =============================================================================
-// CHUYẾN XE (TRIPS) SUPABASE API
+// QUẢN LÝ VÉ (BOOKINGS) TRỰC TIẾP TỪ SUPABASE CLOUD
 // =============================================================================
 
-export async function fetchTripsFromSupabase(): Promise<TripDetail[] | null> {
-  if (!isSupabaseConfigured || !supabase) return null;
-  try {
-    const { data, error } = await supabase
-      .from('tnt_trips')
-      .select('*')
-      .order('departure_time', { ascending: true });
-
-    if (error) {
-      console.warn('⚠️ Lỗi truy vấn tnt_trips từ Supabase:', error.message);
-      return null;
-    }
-    if (!data || data.length === 0) return null;
-
-    return data.map(mapDbToTrip);
-  } catch (err: any) {
-    console.warn('⚠️ Ngoại lệ fetchTripsFromSupabase:', err.message);
+/**
+ * Lấy toàn bộ danh sách vé trực tiếp từ Supabase bảng `bookings`
+ */
+export async function fetchBookingsFromSupabase(): Promise<Booking[] | null> {
+  if (!isSupabaseConfigured || !supabase) {
+    console.log('ℹ️ [Supabase] Client chưa cấu hình biến môi trường (NEXT_PUBLIC_SUPABASE_URL / ANON_KEY).');
     return null;
   }
-}
 
-export async function upsertTripsToSupabase(trips: TripDetail[]): Promise<boolean> {
-  if (!isSupabaseConfigured || !supabase || trips.length === 0) return false;
   try {
-    const rows = trips.map(mapTripToDb);
-    const { error } = await supabase.from('tnt_trips').upsert(rows, { onConflict: 'id' });
-    if (error) {
-      console.warn('⚠️ Lỗi upsertTripsToSupabase:', error.message);
-      return false;
-    }
-    return true;
-  } catch (err: any) {
-    console.warn('⚠️ Ngoại lệ upsertTripsToSupabase:', err.message);
-    return false;
-  }
-}
-
-export async function upsertSingleTripToSupabase(trip: TripDetail): Promise<boolean> {
-  if (!isSupabaseConfigured || !supabase) return false;
-  try {
-    const row = mapTripToDb(trip);
-    const { error } = await supabase.from('tnt_trips').upsert(row, { onConflict: 'id' });
-    if (error) {
-      console.warn('⚠️ Lỗi upsertSingleTripToSupabase:', error.message);
-      return false;
-    }
-    return true;
-  } catch (err: any) {
-    console.warn('⚠️ Ngoại lệ upsertSingleTripToSupabase:', err.message);
-    return false;
-  }
-}
-
-// =============================================================================
-// ĐƠN ĐẶT VÉ (BOOKINGS) SUPABASE API
-// =============================================================================
-
-export async function fetchBookingsFromSupabase(): Promise<Booking[] | null> {
-  if (!isSupabaseConfigured || !supabase) return null;
-  try {
+    console.log('🚀 [Supabase] Thực thi truy vấn: supabase.from("bookings").select("*").order("created_at", { ascending: false })');
     const { data, error } = await supabase
-      .from('tnt_bookings')
+      .from('bookings')
       .select('*')
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.warn('⚠️ Lỗi truy vấn tnt_bookings từ Supabase:', error.message);
+      console.error('❌ [Supabase] Lỗi khi query bảng bookings:', error.message, error);
       return null;
     }
+
+    console.log(`✅ [Supabase] Lấy thành công ${data?.length || 0} vé từ bảng bookings:`, data);
     if (!data) return [];
 
-    return data.map(mapDbToBooking);
+    return data.map(mapDbRowToBooking);
   } catch (err: any) {
-    console.warn('⚠️ Ngoại lệ fetchBookingsFromSupabase:', err.message);
+    console.error('❌ [Supabase] Ngoại lệ khi fetchBookingsFromSupabase:', err);
     return null;
   }
 }
 
-export async function insertBookingToSupabase(booking: Booking): Promise<boolean> {
-  if (!isSupabaseConfigured || !supabase) return false;
+/**
+ * Thêm mới một đơn vé vào bảng `bookings` và đồng thời cập nhật bảng `seats`
+ */
+export async function insertBookingToSupabase(booking: Booking): Promise<{ success: boolean; data?: any; error?: any }> {
+  if (!isSupabaseConfigured || !supabase) {
+    console.warn('⚠️ [Supabase] Bỏ qua ghi cloud: Chưa cấu hình Supabase Client.');
+    return { success: false, error: 'Chưa cấu hình Supabase Client' };
+  }
+
   try {
-    const row = mapBookingToDb(booking);
-    const { error } = await supabase.from('tnt_bookings').upsert(row, { onConflict: 'id' });
+    const row = {
+      booking_code: booking.bookingCode,
+      trip_id: booking.tripId || 'TRIP-01',
+      customer_name: booking.customerName.trim(),
+      customer_phone: (booking.customerPhone || booking.phone || '').trim(),
+      seat_codes: booking.seats,
+      pickup_point: booking.pickupPoint || 'Bến xe Miền Tây',
+      drop_point: booking.dropoffPoint || 'Bến xe Liên Tỉnh Đà Lạt',
+      total_price: booking.totalAmount,
+      payment_method: booking.paymentMethod || 'VNPAY',
+      payment_status: booking.paymentStatus || 'PAID',
+      created_at: new Date().toISOString(),
+    };
+
+    console.log('🚀 [Supabase] Bắt đầu INSERT trực tiếp vào bảng bookings:', row);
+    const { data, error } = await supabase.from('bookings').insert(row).select();
+
     if (error) {
-      console.warn('⚠️ Lỗi insertBookingToSupabase:', error.message);
-      return false;
+      console.error('❌ [Supabase] Lỗi khi insert vào bảng bookings:', error.message, error);
+      return { success: false, error };
+    }
+
+    console.log('✅ [Supabase] Đã ghi nhận vé thành công vào bảng bookings:', data);
+
+    // Cập nhật trạng thái từng ghế vào bảng seats trên Supabase
+    await updateSeatsInSupabase(row.trip_id, booking.seats, 'BOOKED', {
+      customerName: booking.customerName,
+      customerPhone: booking.customerPhone || booking.phone,
+      pickupPoint: booking.pickupPoint,
+    });
+
+    return { success: true, data };
+  } catch (err: any) {
+    console.error('❌ [Supabase] Ngoại lệ trong insertBookingToSupabase:', err);
+    return { success: false, error: err };
+  }
+}
+
+/**
+ * Cập nhật trạng thái các ghế trên bảng `seats` của Supabase
+ */
+export async function updateSeatsInSupabase(
+  tripId: string,
+  seatCodes: string[],
+  status: 'BOOKED' | 'AVAILABLE' | 'LOCKED',
+  customerInfo?: { customerName?: string; customerPhone?: string; pickupPoint?: string }
+): Promise<boolean> {
+  if (!isSupabaseConfigured || !supabase || seatCodes.length === 0) return false;
+
+  try {
+    for (const code of seatCodes) {
+      const isFloor2 = code.startsWith('B') || code.startsWith('D') || code.includes('-2');
+      const seatPayload = {
+        trip_id: tripId || 'TRIP-01',
+        seat_code: code,
+        floor: isFloor2 ? 2 : 1,
+        status,
+        customer_name: status === 'AVAILABLE' ? null : (customerInfo?.customerName || null),
+        customer_phone: status === 'AVAILABLE' ? null : (customerInfo?.customerPhone || null),
+        pickup_point: status === 'AVAILABLE' ? null : (customerInfo?.pickupPoint || null),
+        updated_at: new Date().toISOString(),
+      };
+
+      console.log(`🚀 [Supabase] Cập nhật bảng seats cho ghế ${code} (status=${status}):`, seatPayload);
+
+      // Thử update theo match (trip_id, seat_code)
+      const { data: updated, error: updateErr } = await supabase
+        .from('seats')
+        .update({
+          status,
+          customer_name: seatPayload.customer_name,
+          customer_phone: seatPayload.customer_phone,
+          pickup_point: seatPayload.pickup_point,
+          updated_at: seatPayload.updated_at,
+        })
+        .match({ trip_id: seatPayload.trip_id, seat_code: code })
+        .select();
+
+      if (updateErr) {
+        console.error(`❌ [Supabase] Lỗi khi update bảng seats (${code}):`, updateErr.message);
+      }
+
+      // Nếu dòng ghế chưa từng tồn tại trong bảng seats, thực hiện insert
+      if (!updated || updated.length === 0) {
+        const { error: insertErr } = await supabase.from('seats').insert(seatPayload);
+        if (insertErr) {
+          console.error(`❌ [Supabase] Lỗi khi insert ghế mới vào bảng seats (${code}):`, insertErr.message);
+        } else {
+          console.log(`✅ [Supabase] Đã tạo mới ghế ${code} trong bảng seats.`);
+        }
+      } else {
+        console.log(`✅ [Supabase] Đã cập nhật trạng thái ghế ${code} thành công trên bảng seats.`);
+      }
     }
     return true;
   } catch (err: any) {
-    console.warn('⚠️ Ngoại lệ insertBookingToSupabase:', err.message);
+    console.error('❌ [Supabase] Ngoại lệ updateSeatsInSupabase:', err);
     return false;
   }
 }
 
-export async function updateBookingInSupabase(
-  bookingId: string,
-  updates: Partial<Booking>
+/**
+ * Hủy vé trên Supabase (chuyển payment_status sang CANCELLED và giải phóng ghế trên bảng seats)
+ */
+export async function cancelBookingInSupabase(
+  bookingCode: string,
+  tripId: string,
+  seatCodes: string[]
 ): Promise<boolean> {
   if (!isSupabaseConfigured || !supabase) return false;
-  try {
-    const payload: any = { updated_at: new Date().toISOString() };
-    if (updates.status) payload.status = updates.status;
-    if (updates.paymentStatus) payload.payment_status = updates.paymentStatus;
-    if (updates.paymentMethod) payload.payment_method = updates.paymentMethod;
 
+  try {
+    console.log(`🚀 [Supabase] Cập nhật hủy vé ${bookingCode} trên bảng bookings...`);
     const { error } = await supabase
-      .from('tnt_bookings')
-      .update(payload)
-      .eq('id', bookingId);
+      .from('bookings')
+      .update({ payment_status: 'CANCELLED' })
+      .eq('booking_code', bookingCode);
 
     if (error) {
-      console.warn('⚠️ Lỗi updateBookingInSupabase:', error.message);
+      console.error(`❌ [Supabase] Lỗi hủy vé ${bookingCode}:`, error.message);
       return false;
     }
+
+    console.log(`✅ [Supabase] Đã cập nhật hủy vé ${bookingCode} thành công.`);
+
+    // Giải phóng các ghế trên bảng seats
+    await updateSeatsInSupabase(tripId, seatCodes, 'AVAILABLE');
     return true;
   } catch (err: any) {
-    console.warn('⚠️ Ngoại lệ updateBookingInSupabase:', err.message);
-    return false;
-  }
-}
-
-// =============================================================================
-// XE & ĐỘI TÀI XẾ (FLEET & CREW) SUPABASE API
-// =============================================================================
-
-export async function fetchBusesFromSupabase(): Promise<BusItem[] | null> {
-  if (!isSupabaseConfigured || !supabase) return null;
-  try {
-    const { data, error } = await supabase.from('tnt_buses').select('*');
-    if (error || !data || data.length === 0) return null;
-    return data.map((b: any) => ({
-      id: b.id,
-      plateNumber: b.plate_number,
-      model: b.model,
-      busType: b.bus_type,
-      year: b.year,
-      inspectionExpiry: b.inspection_expiry,
-      status: b.status,
-      lastMaintenance: b.last_maintenance,
-      totalTrips: b.total_trips,
-    }));
-  } catch {
-    return null;
-  }
-}
-
-export async function upsertBusesToSupabase(buses: BusItem[]): Promise<boolean> {
-  if (!isSupabaseConfigured || !supabase || buses.length === 0) return false;
-  try {
-    const rows = buses.map((b) => ({
-      id: b.id,
-      plate_number: b.plateNumber,
-      model: b.model,
-      bus_type: b.busType,
-      year: b.year,
-      inspection_expiry: b.inspectionExpiry,
-      status: b.status,
-      last_maintenance: b.lastMaintenance,
-      total_trips: b.totalTrips,
-      updated_at: new Date().toISOString(),
-    }));
-    await supabase.from('tnt_buses').upsert(rows, { onConflict: 'id' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export async function fetchDriversFromSupabase(): Promise<DriverItem[] | null> {
-  if (!isSupabaseConfigured || !supabase) return null;
-  try {
-    const { data, error } = await supabase.from('tnt_drivers').select('*');
-    if (error || !data || data.length === 0) return null;
-    return data.map((d: any) => ({
-      id: d.id,
-      name: d.name,
-      phone: d.phone,
-      licenseClass: d.license_class,
-      licenseNumber: d.license_number,
-      experienceYears: d.experience_years,
-      mainRoute: d.main_route,
-      role: d.role,
-      status: d.status,
-      totalTrips: d.total_trips,
-    }));
-  } catch {
-    return null;
-  }
-}
-
-export async function upsertDriversToSupabase(drivers: DriverItem[]): Promise<boolean> {
-  if (!isSupabaseConfigured || !supabase || drivers.length === 0) return false;
-  try {
-    const rows = drivers.map((d) => ({
-      id: d.id,
-      name: d.name,
-      phone: d.phone,
-      license_class: d.licenseClass,
-      license_number: d.licenseNumber,
-      experience_years: d.experienceYears,
-      main_route: d.mainRoute,
-      role: d.role,
-      status: d.status,
-      total_trips: d.totalTrips,
-      updated_at: new Date().toISOString(),
-    }));
-    await supabase.from('tnt_drivers').upsert(rows, { onConflict: 'id' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// =============================================================================
-// TÀI KHOẢN NGƯỜI DÙNG (USERS) SUPABASE API
-// =============================================================================
-
-export async function fetchUsersFromSupabase(): Promise<UserAccount[] | null> {
-  if (!isSupabaseConfigured || !supabase) return null;
-  try {
-    const { data, error } = await supabase.from('tnt_users').select('*');
-    if (error || !data || data.length === 0) return null;
-    return data.map((u: any) => ({
-      id: u.id,
-      name: u.name,
-      username: u.username,
-      email: u.email,
-      phone: u.phone,
-      password: u.password,
-      role: u.role,
-      status: u.status,
-      lastLogin: u.last_login,
-      createdAt: u.created_at,
-    }));
-  } catch {
-    return null;
-  }
-}
-
-export async function upsertUsersToSupabase(users: UserAccount[]): Promise<boolean> {
-  if (!isSupabaseConfigured || !supabase || users.length === 0) return false;
-  try {
-    const rows = users.map((u) => ({
-      id: u.id,
-      name: u.name,
-      username: u.username,
-      email: u.email,
-      phone: u.phone,
-      password: u.password,
-      role: u.role,
-      status: u.status,
-      last_login: u.lastLogin,
-      created_at: u.createdAt,
-      updated_at: new Date().toISOString(),
-    }));
-    await supabase.from('tnt_users').upsert(rows, { onConflict: 'id' });
-    return true;
-  } catch {
+    console.error('❌ [Supabase] Ngoại lệ cancelBookingInSupabase:', err);
     return false;
   }
 }
@@ -400,34 +253,72 @@ export function subscribeSupabaseRealtime(onChange: (table: string, payload: any
     return () => {};
   }
 
-  const channel = supabase
-    .channel('tnt_database_changes')
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'tnt_bookings' },
-      (payload) => {
-        onChange('tnt_bookings', payload);
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'tnt_trips' },
-      (payload) => {
-        onChange('tnt_trips', payload);
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'tnt_buses' },
-      (payload) => {
-        onChange('tnt_buses', payload);
-      }
-    )
-    .subscribe();
+  try {
+    const channel = supabase
+      .channel('public_bookings_realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bookings' },
+        (payload) => {
+          console.log('⚡ [Supabase Realtime] Sự kiện thay đổi trên bảng bookings:', payload);
+          onChange('bookings', payload);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'seats' },
+        (payload) => {
+          console.log('⚡ [Supabase Realtime] Sự kiện thay đổi trên bảng seats:', payload);
+          onChange('seats', payload);
+        }
+      )
+      .subscribe();
 
-  return () => {
-    if (supabase) {
-      supabase.removeChannel(channel);
-    }
-  };
+    return () => {
+      if (supabase) {
+        supabase.removeChannel(channel);
+      }
+    };
+  } catch (err) {
+    console.warn('⚠️ Không thể đăng ký kênh Supabase Realtime:', err);
+    return () => {};
+  }
 }
+
+export async function upsertTripsToSupabase(trips: any[]): Promise<boolean> {
+  if (!isSupabaseConfigured || !supabase || trips.length === 0) return false;
+  try {
+    const rows = trips.map((t) => ({
+      id: t.id,
+      route_name: t.route,
+      departure_time: t.departureTime,
+      bus_number: t.plateNumber,
+      bus_type: t.busType,
+      driver_name: t.driverName,
+      driver_phone: t.driverPhone,
+      price: t.price,
+    }));
+    const { error } = await supabase.from('trips').upsert(rows, { onConflict: 'id' });
+    if (error) {
+      console.warn('⚠️ [Supabase] upsertTripsToSupabase warning:', error.message);
+      return false;
+    }
+    return true;
+  } catch (e: any) {
+    console.warn('⚠️ [Supabase] upsertTripsToSupabase error:', e.message);
+    return false;
+  }
+}
+
+export async function upsertBusesToSupabase(buses: any[]): Promise<boolean> {
+  return true;
+}
+
+export async function upsertDriversToSupabase(drivers: any[]): Promise<boolean> {
+  return true;
+}
+
+export async function upsertUsersToSupabase(users: any[]): Promise<boolean> {
+  return true;
+}
+

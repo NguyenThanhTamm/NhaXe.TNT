@@ -43,6 +43,7 @@ import {
   getTripById,
   bookSeats,
   createBooking,
+  createBookingAsync,
   matchCity,
   subscribeBookingStore,
   TripDetail,
@@ -631,8 +632,8 @@ export default function HomePage() {
     return Math.max(0, checkoutData.totalAmount - calculatedDiscount);
   }, [checkoutData, calculatedDiscount]);
 
-  // Ghi nhận đặt vé đồng bộ sang bookingStore
-  const handleConfirmBooking = (e: React.FormEvent) => {
+  // Ghi nhận đặt vé đồng bộ sang bookingStore & Supabase Cloud
+  const handleConfirmBooking = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsFormTouched(true);
 
@@ -643,8 +644,9 @@ export default function HomePage() {
     const dropoffObj = selectedTrip?.dropoffPoints.find((d) => d.id === dropoffPointId);
 
     try {
-      // GỌI SINGLE SOURCE OF TRUTH BOOKINGSTORE ĐỂ LƯU VÀ CẬP NHẬT TRẠNG THÁI GHẾ
-      const result = createBooking({
+      console.log('🚀 [Đặt vé] Khách hàng xác nhận đặt vé, gọi createBookingAsync...');
+      // GỌI SINGLE SOURCE OF TRUTH BOOKINGSTORE ĐỂ LƯU VÀ CẬP NHẬT TRỰC TIẾP LÊN SUPABASE
+      const result = await createBookingAsync({
         tripId: selectedTrip.id,
         seatCodes: checkoutData.seats.map((s) => s.seatCode),
         customerName: passengerName,

@@ -23,6 +23,8 @@ import {
   getBookings,
   getTrips,
   subscribeBookingStore,
+  fetchBookingsFromSupabase,
+  isSupabaseConfigured,
   Booking,
   TripDetail,
 } from '@/services/bookingStore';
@@ -54,11 +56,18 @@ export default function AdminDashboardPage() {
   const [lastSyncTime, setLastSyncTime] = useState<string>('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Hàm tải và tính toán lại dữ liệu thời gian thực
-  const calculateMetrics = useCallback(() => {
+  // Hàm tải và tính toán lại dữ liệu thời gian thực từ Supabase Cloud
+  const calculateMetrics = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const currentBookings = getBookings();
+      let currentBookings = getBookings();
+      if (isSupabaseConfigured) {
+        console.log('🔄 [Dashboard] Tải dữ liệu vé mới nhất từ Supabase Cloud...');
+        const cloudBookings = await fetchBookingsFromSupabase();
+        if (cloudBookings && cloudBookings.length > 0) {
+          currentBookings = cloudBookings;
+        }
+      }
       const currentTrips = getTrips({ includeCompleted: true });
 
       setBookings(currentBookings);

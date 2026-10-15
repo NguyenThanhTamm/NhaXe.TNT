@@ -644,19 +644,23 @@ export default function HomePage() {
     const dropoffObj = selectedTrip?.dropoffPoints.find((d) => d.id === dropoffPointId);
 
     try {
-      console.log('🚀 [Đặt vé] Khách hàng xác nhận đặt vé, gọi createBookingAsync...');
-      // GỌI SINGLE SOURCE OF TRUTH BOOKINGSTORE ĐỂ LƯU VÀ CẬP NHẬT TRỰC TIẾP LÊN SUPABASE
-      const result = await createBookingAsync({
+      console.log('🚀 [Đặt vé] Khách hàng xác nhận đặt vé, gọi createBooking...');
+      const pickupAddress = pickupObj ? `${pickupObj.name} (${pickupObj.address})` : 'Bến xe Miền Đông';
+      const dropAddress = dropoffObj ? `${dropoffObj.name} (${dropoffObj.address})` : 'Bến xe Liên tỉnh Đà Lạt';
+
+      const result = await createBooking({
         tripId: selectedTrip.id,
         seatCodes: checkoutData.seats.map((s) => s.seatCode),
         customerName: passengerName,
         customerPhone: passengerPhone,
         customerEmail: passengerEmail,
-        pickupPoint: pickupObj ? `${pickupObj.name} (${pickupObj.address})` : 'Điểm đón chính',
-        dropoffPoint: dropoffObj ? `${dropoffObj.name} (${dropoffObj.address})` : 'Bến xe đích',
+        pickupPoint: pickupAddress,
+        dropPoint: dropAddress,
+        dropoffPoint: dropAddress,
+        totalPrice: finalTotalAmount,
+        totalAmount: finalTotalAmount,
         paymentMethod: paymentMethod === 'CASH' ? 'CASH' : 'VNPAY',
         luggageNote: roadsideNote || 'Hành lý tiêu chuẩn',
-        totalAmount: finalTotalAmount,
         departureDate,
       });
 

@@ -60,14 +60,8 @@ export default function AdminDashboardPage() {
   const calculateMetrics = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      let currentBookings = getBookings();
-      if (isSupabaseConfigured) {
-        console.log('🔄 [Dashboard] Tải dữ liệu vé mới nhất từ Supabase Cloud...');
-        const cloudBookings = await fetchBookingsFromSupabase();
-        if (cloudBookings && cloudBookings.length > 0) {
-          currentBookings = cloudBookings;
-        }
-      }
+      console.log('🔄 [Dashboard] Tải dữ liệu vé mới nhất từ Supabase Cloud...');
+      const currentBookings = await getBookings();
       const currentTrips = getTrips({ includeCompleted: true });
 
       setBookings(currentBookings);

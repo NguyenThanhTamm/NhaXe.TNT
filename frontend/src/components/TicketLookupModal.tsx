@@ -19,7 +19,7 @@ export const TicketLookupModal: React.FC<TicketLookupModalProps> = ({ isOpen, on
 
   if (!isOpen) return null;
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setHasSearched(true);
@@ -33,7 +33,7 @@ export const TicketLookupModal: React.FC<TicketLookupModalProps> = ({ isOpen, on
       return;
     }
 
-    const allBookings = getBookings();
+    const allBookings = await getBookings();
     const matched = allBookings.find((b) => {
       const matchCode = cleanCode && (b.bookingCode.toUpperCase() === cleanCode || b.id.toUpperCase() === cleanCode);
       const bPhoneClean = (b.customerPhone || b.phone || '').replace(/\D/g, '');

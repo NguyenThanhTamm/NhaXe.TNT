@@ -44,6 +44,7 @@ export interface BookingRecord {
 }
 
 import {
+  getLocalBookings,
   getBookings,
   cancelBooking,
   subscribeBookingStore,
@@ -58,22 +59,16 @@ export default function AdminBookingsPage() {
   const [routeFilter, setRouteFilter] = useState<string>('ALL');
 
   // Lấy dữ liệu trực tiếp từ Single Source of Truth Store và tự động đồng bộ thời gian thực
-  const [bookings, setBookings] = useState<Booking[]>(() => getBookings());
+  const [bookings, setBookings] = useState<Booking[]>(() => getLocalBookings());
 
   useEffect(() => {
     let isMounted = true;
     const refreshData = async () => {
-      if (isSupabaseConfigured) {
-        console.log('🔄 [Admin Bookings] Đang tải danh sách vé trực tiếp từ Supabase...');
-        const cloudBookings = await fetchBookingsFromSupabase();
-        if (isMounted && cloudBookings) {
-          console.log(`✅ [Admin Bookings] Đã cập nhật ${cloudBookings.length} vé từ Supabase vào bảng.`);
-          setBookings(cloudBookings);
-          return;
-        }
-      }
-      if (isMounted) {
-        setBookings(getBookings());
+      console.log('🔄 [Admin Bookings] Đang tải danh sách vé trực tiếp từ Supabase...');
+      const list = await getBookings();
+      if (isMounted && list) {
+        console.log(`✅ [Admin Bookings] Đã cập nhật ${list.length} vé từ Supabase vào bảng.`);
+        setBookings(list);
       }
     };
 

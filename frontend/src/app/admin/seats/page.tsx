@@ -41,6 +41,7 @@ import {
   getTrips,
   saveTrips,
   bookSeats,
+  createBooking,
   cancelBooking,
   lockSeat,
   unlockSeat,
@@ -221,7 +222,7 @@ function AdminSeatManagementInner() {
     });
   };
 
-  const handlePosSubmit = (e: React.FormEvent) => {
+  const handlePosSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sellingSeat || !currentTrip) return;
     if (!posForm.customerName.trim() || !posForm.customerPhone.trim()) {
@@ -229,14 +230,15 @@ function AdminSeatManagementInner() {
       return;
     }
 
-    const res = bookSeats({
+    const res = await createBooking({
       tripId: currentTrip.id,
       seatCodes: [sellingSeat.seatCode],
       customerName: posForm.customerName.trim(),
       customerPhone: posForm.customerPhone.trim(),
       pickupPoint: posForm.pickupPoint,
-      dropoffPoint: posForm.dropoffPoint,
+      dropPoint: posForm.dropoffPoint,
       paymentMethod: posForm.paymentMethod,
+      totalPrice: sellingSeat.price || currentTrip.price,
       luggageNote: 'Vé bán nhanh tại quầy điều hành',
     });
 

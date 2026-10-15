@@ -4,7 +4,7 @@
 // Đồng bộ thời gian thực qua LocalStorage + CustomEvent & Storage Event reactivity
 // Hỗ trợ kết nối Supabase Cloud Database & Realtime broadcast đa thiết bị
 
-import { isSupabaseConfigured } from '@/lib/supabaseClient';
+import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import {
   fetchBookingsFromSupabase,
   insertBookingToSupabase,
@@ -15,9 +15,10 @@ import {
   upsertBusesToSupabase,
   upsertDriversToSupabase,
   upsertUsersToSupabase,
+  mapDbRowToBooking,
 } from './supabaseService';
 
-export { isSupabaseConfigured, fetchBookingsFromSupabase };
+export { isSupabaseConfigured, fetchBookingsFromSupabase, mapDbRowToBooking };
 
 export type SeatStatus = 'AVAILABLE' | 'BOOKED' | 'HOLDING' | 'LOCKED';
 export type TripStatus = 'SCHEDULED' | 'RUNNING' | 'COMPLETED' | 'CANCELLED';
@@ -1333,40 +1334,52 @@ export function cancelTrip(tripId: string): TripDetail | null {
 // ==========================================
 // 4. MODULE BOOKINGS & SEATS (ĐẶT VÉ & GHẾ)
 // ==========================================
-export function getBookings(): Booking[] {
+export function getLocalBookings(): Booking[] {
   if (typeof window === 'undefined') return createSeedBookings();
   const raw = localStorage.getItem(STORAGE_KEY_BOOKINGS);
-  let list: Booking[] = [];
   if (!raw) {
-    list = createSeedBookings();
+    const list = createSeedBookings();
     localStorage.setItem(STORAGE_KEY_BOOKINGS, JSON.stringify(list));
-  } else {
-    try {
-      list = JSON.parse(raw);
-    } catch {
-      list = createSeedBookings();
+    return list;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return createSeedBookings();
+  }
+}
+
+/**
+ * Lấy danh sách đặt vé bất đồng bộ: Query trực tiếp từ Supabase Cloud bảng `bookings`
+ */
+export async function getBookings(): Promise<Booking[]> {
+  try {
+    console.log('🔄 [bookingStore] Query trực tiếp bảng bookings từ Supabase...');
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    console.log('[Supabase getBookings result]:', data, error);
+
+    if (error) {
+      console.error('❌ [bookingStore] Lỗi query Supabase getBookings:', error);
+      return getLocalBookings();
     }
+
+    if (data && Array.isArray(data)) {
+      const mapped = data.map(mapDbRowToBooking);
+      console.log(`✅ [bookingStore] Supabase trả về ${mapped.length} vé.`);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(STORAGE_KEY_BOOKINGS, JSON.stringify(mapped));
+      }
+      return mapped;
+    }
+  } catch (err) {
+    console.error('❌ [bookingStore] Ngoại lệ khi gọi getBookings từ Supabase:', err);
   }
 
-  // Tự động query Supabase Cloud bảng `bookings` khi chạy trên Client
-  if (isSupabaseConfigured && typeof window !== 'undefined') {
-    fetchBookingsFromSupabase()
-      .then((cloudBookings) => {
-        if (cloudBookings && cloudBookings.length > 0) {
-          const currentRaw = localStorage.getItem(STORAGE_KEY_BOOKINGS);
-          if (JSON.stringify(cloudBookings) !== currentRaw) {
-            console.log(`📥 [bookingStore] Nhận được ${cloudBookings.length} vé từ Supabase Cloud. Cập nhật state...`);
-            localStorage.setItem(STORAGE_KEY_BOOKINGS, JSON.stringify(cloudBookings));
-            notifyStoreUpdate();
-          }
-        }
-      })
-      .catch((err) => {
-        console.error('❌ [bookingStore] Lỗi fetchBookingsFromSupabase trong getBookings():', err);
-      });
-  }
-
-  return list;
+  return getLocalBookings();
 }
 
 export function saveBookings(bookings: Booking[]) {
@@ -1389,6 +1402,7 @@ export interface BookSeatsParams {
   totalPrice?: number;
   departureDate?: string;
   luggageNote?: string;
+  bookingCode?: string;
 }
 
 export type CreateBookingParams = BookSeatsParams;
@@ -1441,7 +1455,7 @@ export function bookSeats(params: BookSeatsParams): { success: boolean; bookingC
 
   // Sinh mã vé ngẫu nhiên
   const randNum = Math.floor(100000 + Math.random() * 900000);
-  const bookingCode = `TNT-${randNum}`;
+  const bookingCode = params.bookingCode || `TNT-${randNum}`;
   const dropPointFinal = params.dropoffPoint || params.dropPoint || '';
   const totalAmount = params.totalPrice ?? params.totalAmount ?? (params.seatCodes.length * trip.price);
   const paymentMethodFinal: 'VNPAY' | 'CASH' | 'TRANSFER' = (params.paymentMethod as any) || 'VNPAY';
@@ -1495,23 +1509,9 @@ export function bookSeats(params: BookSeatsParams): { success: boolean; bookingC
     createdAt: timeString,
   };
 
-  const currentBookings = getBookings();
+  const currentBookings = getLocalBookings();
   currentBookings.unshift(newBooking);
   saveBookings(currentBookings);
-
-  // Đồng bộ tức thời lên Supabase Cloud Database (bảng bookings & seats)
-  if (isSupabaseConfigured) {
-    console.log('🚀 [bookingStore] bookSeats kích hoạt insertBookingToSupabase cho mã vé:', newBooking.bookingCode);
-    insertBookingToSupabase(newBooking)
-      .then((res) => {
-        if (res.success) {
-          console.log('✅ [bookingStore] Đã lưu vé và cập nhật ghế vào Supabase thành công:', res.data);
-        } else {
-          console.error('❌ [bookingStore] Lỗi lưu vé vào Supabase:', res.error);
-        }
-      })
-      .catch((err) => console.error('❌ [bookingStore] Ngoại lệ khi gọi insertBookingToSupabase:', err));
-  }
 
   // Bật tín hiệu đồng bộ tức thì cho các tab khác
   if (typeof window !== 'undefined') {
@@ -1528,27 +1528,98 @@ export function bookSeats(params: BookSeatsParams): { success: boolean; bookingC
   };
 }
 
-export function createBooking(params: BookSeatsParams) {
-  return bookSeats(params);
-}
+/**
+ * Thực hiện insert trực tiếp vào Supabase theo đúng chuẩn yêu cầu
+ */
+export async function createBooking(bookingData: any) {
+  const bookingCode = bookingData.bookingCode || bookingData.booking_code || `TNT-${Date.now().toString().slice(-6)}`;
+  const tripId = bookingData.tripId || bookingData.trip_id || 'TRIP-01';
+  const customerName = bookingData.customerName || bookingData.customer_name || 'Khách hàng';
+  const customerPhone = bookingData.customerPhone || bookingData.customer_phone || '';
+  const seatCodes = bookingData.seatCodes || bookingData.seat_codes || bookingData.seats || [];
+  const pickupPoint = bookingData.pickupPoint || bookingData.pickup_point || 'Bến xe Miền Đông';
+  const dropPoint = bookingData.dropPoint || bookingData.dropoffPoint || bookingData.drop_point || 'Bến xe Liên tỉnh Đà Lạt';
+  const totalPrice = bookingData.totalPrice ?? bookingData.totalAmount ?? bookingData.total_price ?? 0;
+  const paymentMethod = bookingData.paymentMethod || bookingData.payment_method || 'CASH';
+  const paymentStatus = bookingData.paymentStatus || bookingData.payment_status || (paymentMethod === 'VNPAY' ? 'PAID' : 'PENDING');
 
-export async function createBookingAsync(params: BookSeatsParams) {
-  const result = bookSeats(params);
-  if (result.success && result.booking && isSupabaseConfigured) {
-    console.log('🚀 [bookingStore] createBookingAsync đang đợi Supabase ghi nhận vé:', result.booking.bookingCode);
-    const insertRes = await insertBookingToSupabase(result.booking);
-    if (!insertRes.success) {
-      console.error('❌ [bookingStore] Lỗi createBookingAsync khi ghi Supabase:', insertRes.error);
-    } else {
-      console.log('✅ [bookingStore] createBookingAsync hoàn tất ghi Supabase:', insertRes.data);
+  console.log('🚀 [Supabase] Gọi createBooking insert trực tiếp vào bảng bookings...', {
+    booking_code: bookingCode,
+    trip_id: tripId,
+    customer_name: customerName,
+    customer_phone: customerPhone,
+    seat_codes: seatCodes,
+    pickup_point: pickupPoint,
+    drop_point: dropPoint,
+    total_price: totalPrice,
+    payment_method: paymentMethod,
+    payment_status: paymentStatus
+  });
+
+  const { data, error } = await supabase.from('bookings').insert([{
+    booking_code: bookingCode,
+    trip_id: tripId,
+    customer_name: customerName,
+    customer_phone: customerPhone,
+    seat_codes: seatCodes,
+    pickup_point: pickupPoint,
+    drop_point: dropPoint,
+    total_price: totalPrice,
+    payment_method: paymentMethod,
+    payment_status: paymentStatus
+  }]).select();
+
+  console.log("Supabase insert result:", data, error);
+
+  if (error) {
+    console.error("❌ [bookingStore] Lỗi Supabase insert:", error);
+  } else {
+    console.log("✅ [bookingStore] Insert Supabase thành công:", data);
+  }
+
+  // Cập nhật trạng thái bảng seats trên Supabase
+  if (seatCodes.length > 0 && tripId) {
+    try {
+      await updateSeatsInSupabase(tripId, seatCodes, 'BOOKED', {
+        customerName,
+        customerPhone,
+        pickupPoint,
+      });
+    } catch (seatErr) {
+      console.warn("Lưu trạng thái seats vào Supabase:", seatErr);
     }
   }
-  return result;
+
+  // Cập nhật local state & trips
+  const localRes = bookSeats({
+    tripId,
+    seatCodes,
+    customerName,
+    customerPhone,
+    pickupPoint,
+    dropPoint,
+    totalPrice,
+    paymentMethod,
+    bookingCode,
+    departureDate: bookingData.departureDate,
+    luggageNote: bookingData.luggageNote
+  });
+
+  return {
+    success: !error || localRes.success,
+    bookingCode,
+    data,
+    error,
+    booking: localRes.booking,
+    message: error ? `Đã lưu cục bộ (Supabase: ${error.message})` : 'Đặt vé thành công!'
+  };
 }
+
+export const createBookingAsync = createBooking;
 
 // HỦY VÉ & GIẢI PHÓNG GHẾ
 export function cancelBooking(bookingIdOrCode: string): { success: boolean; message: string } {
-  const bookings = getBookings();
+  const bookings = getLocalBookings();
   const bookingIdx = bookings.findIndex((b) => b.id === bookingIdOrCode || b.bookingCode === bookingIdOrCode);
 
   if (bookingIdx === -1) {
